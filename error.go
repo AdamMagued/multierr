@@ -330,13 +330,42 @@ func inspect(errors []error) (res inspectResult) {
 		}
 
 		if merr, ok := err.(*multiError); ok {
-			res.Capacity += len(merr.errors)
+			if merr != nil {
+				res.Capacity += len(merr.errors)
+			}
+			res.ContainsMultiError = true
+		} else if eg, ok := err.(multipleErrors); ok {
+			res.Capacity += inspectSubErrors(eg.Unwrap())
+			res.ContainsMultiError = true
+		} else if eg, ok := err.(errorGroup); ok {
+			res.Capacity += inspectSubErrors(eg.Errors())
 			res.ContainsMultiError = true
 		} else {
 			res.Capacity++
 		}
 	}
 	return
+}
+
+func inspectSubErrors(errors []error) int {
+	var total int
+	for _, err := range errors {
+		if err == nil {
+			continue
+		}
+		if merr, ok := err.(*multiError); ok {
+			if merr != nil {
+				total += len(merr.errors)
+			}
+		} else if eg, ok := err.(multipleErrors); ok {
+			total += inspectSubErrors(eg.Unwrap())
+		} else if eg, ok := err.(errorGroup); ok {
+			total += inspectSubErrors(eg.Errors())
+		} else {
+			total++
+		}
+	}
+	return total
 }
 
 // fromSlice converts the given list of errors into a single error.
@@ -368,19 +397,44 @@ func fromSlice(errors []error) error {
 	}
 
 	nonNilErrs := make([]error, 0, res.Capacity)
-	for _, err := range errors[res.FirstErrorIdx:] {
+	var appendErr func(err error)
+	appendErr = func(err error) {
 		if err == nil {
-			continue
+			return
 		}
-
 		if nested, ok := err.(*multiError); ok {
-			nonNilErrs = append(nonNilErrs, nested.errors...)
-		} else {
-			nonNilErrs = append(nonNilErrs, err)
+			if nested != nil {
+				nonNilErrs = append(nonNilErrs, nested.errors...)
+			}
+			return
 		}
+		if eg, ok := err.(multipleErrors); ok {
+			for _, sub := range eg.Unwrap() {
+				appendErr(sub)
+			}
+			return
+		}
+		if eg, ok := err.(errorGroup); ok {
+			for _, sub := range eg.Errors() {
+				appendErr(sub)
+			}
+			return
+		}
+		nonNilErrs = append(nonNilErrs, err)
 	}
 
-	return &multiError{errors: nonNilErrs}
+	for _, err := range errors[res.FirstErrorIdx:] {
+		appendErr(err)
+	}
+
+	switch len(nonNilErrs) {
+	case 0:
+		return nil
+	case 1:
+		return nonNilErrs[0]
+	default:
+		return &multiError{errors: nonNilErrs}
+	}
 }
 
 // Combine combines the passed errors into a single error.
@@ -436,6 +490,19 @@ func Combine(errors ...error) error {
 //
 // Note that the variable MUST be a named return to append an error to it from
 // the defer statement. See also [AppendInvoke].
+func isMultiError(err error) bool {
+	if merr, ok := err.(*multiError); ok {
+		return merr != nil
+	}
+	if _, ok := err.(multipleErrors); ok {
+		return true
+	}
+	if _, ok := err.(errorGroup); ok {
+		return true
+	}
+	return false
+}
+
 func Append(left error, right error) error {
 	switch {
 	case left == nil:
@@ -444,13 +511,13 @@ func Append(left error, right error) error {
 		return left
 	}
 
-	if _, ok := right.(*multiError); !ok {
-		if l, ok := left.(*multiError); ok && !l.copyNeeded.Swap(true) {
+	if !isMultiError(right) {
+		if l, ok := left.(*multiError); ok && l != nil && !l.copyNeeded.Swap(true) {
 			// Common case where the error on the left is constantly being
 			// appended to.
 			errs := append(l.errors, right)
 			return &multiError{errors: errs}
-		} else if !ok {
+		} else if !ok && !isMultiError(left) {
 			// Both errors are single errors.
 			return &multiError{errors: []error{left, right}}
 		}
@@ -530,12 +597,14 @@ func extractErrors(err error) []error {
 
 	// check if the given err is an Unwrapable error that
 	// implements multipleErrors interface.
-	eg, ok := err.(multipleErrors)
-	if !ok {
-		return []error{err}
+	if eg, ok := err.(multipleErrors); ok {
+		return append(([]error)(nil), eg.Unwrap()...)
+	}
+	if eg, ok := err.(errorGroup); ok {
+		return append(([]error)(nil), eg.Errors()...)
 	}
 
-	return append(([]error)(nil), eg.Unwrap()...)
+	return []error{err}
 }
 
 // Invoker is an operation that may fail with an error. Use it with

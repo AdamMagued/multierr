@@ -447,10 +447,9 @@ func TestErrors(t *testing.T) {
 			dontCast: true,
 		},
 		{
-			// We don't yet support non-multierr errors that do
-			// not implement Unwrap() []error.
+			// Non-multierr errors that implement errorGroup are supported.
 			give:     notMultiErr{},
-			want:     []error{notMultiErr{}},
+			want:     []error{errors.New("great sadness")},
 			dontCast: true,
 		},
 		{
@@ -809,5 +808,140 @@ func TestEveryWithErrorsJoin(t *testing.T) {
 		assert.False(t, Every(err, myError1))
 		assert.True(t, errors.Is(err, myError2))
 		assert.False(t, Every(err, myError2))
+	})
+}
+
+type testCustomErrorGroup struct {
+	errs []error
+}
+
+func (g testCustomErrorGroup) Error() string {
+	return "custom error group"
+}
+
+func (g testCustomErrorGroup) Errors() []error {
+	return g.errs
+}
+
+func TestCombineFlattening(t *testing.T) {
+	err1 := errors.New("err1")
+	err2 := errors.New("err2")
+	err3 := errors.New("err3")
+	err4 := errors.New("err4")
+	err5 := errors.New("err5")
+
+	t.Run("errors.Join", func(t *testing.T) {
+		got := Combine(err1, errors.Join(err2, err3))
+		assert.Equal(t, []error{err1, err2, err3}, Errors(got))
+
+		got = Combine(errors.Join(err1, err2), errors.Join(err3, err4))
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+	})
+
+	t.Run("errorGroup", func(t *testing.T) {
+		got := Combine(err1, testCustomErrorGroup{errs: []error{err2, err3}})
+		assert.Equal(t, []error{err1, err2, err3}, Errors(got))
+
+		got = Combine(
+			testCustomErrorGroup{errs: []error{err1, err2}},
+			testCustomErrorGroup{errs: []error{err3, err4}},
+		)
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+	})
+
+	t.Run("nested multi-errors", func(t *testing.T) {
+		nestedJoin := errors.Join(err2, errors.Join(err3, err4))
+		got := Combine(err1, nestedJoin)
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+
+		nestedGroup := testCustomErrorGroup{
+			errs: []error{
+				err2,
+				testCustomErrorGroup{errs: []error{err3, err4}},
+			},
+		}
+		got = Combine(err1, nestedGroup)
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+
+		mixed := Combine(
+			errors.Join(err1, testCustomErrorGroup{errs: []error{err2, err3}}),
+			Combine(err4, err5),
+		)
+		assert.Equal(t, []error{err1, err2, err3, err4, err5}, Errors(mixed))
+	})
+}
+
+func TestAppendFlattening(t *testing.T) {
+	err1 := errors.New("err1")
+	err2 := errors.New("err2")
+	err3 := errors.New("err3")
+	err4 := errors.New("err4")
+	err5 := errors.New("err5")
+	err6 := errors.New("err6")
+
+	t.Run("errors.Join", func(t *testing.T) {
+		got := Append(err1, errors.Join(err2, err3))
+		assert.Equal(t, []error{err1, err2, err3}, Errors(got))
+
+		got = Append(errors.Join(err1, err2), err3)
+		assert.Equal(t, []error{err1, err2, err3}, Errors(got))
+
+		got = Append(errors.Join(err1, err2), errors.Join(err3, err4))
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+	})
+
+	t.Run("errorGroup", func(t *testing.T) {
+		got := Append(err1, testCustomErrorGroup{errs: []error{err2, err3}})
+		assert.Equal(t, []error{err1, err2, err3}, Errors(got))
+
+		got = Append(testCustomErrorGroup{errs: []error{err1, err2}}, err3)
+		assert.Equal(t, []error{err1, err2, err3}, Errors(got))
+
+		got = Append(
+			testCustomErrorGroup{errs: []error{err1, err2}},
+			testCustomErrorGroup{errs: []error{err3, err4}},
+		)
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+	})
+
+	t.Run("nested multi-errors", func(t *testing.T) {
+		nestedJoin := errors.Join(err2, errors.Join(err3, err4))
+		got := Append(err1, nestedJoin)
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+
+		got = Append(nestedJoin, err1)
+		assert.Equal(t, []error{err2, err3, err4, err1}, Errors(got))
+
+		nestedGroup := testCustomErrorGroup{
+			errs: []error{
+				err2,
+				testCustomErrorGroup{errs: []error{err3, err4}},
+			},
+		}
+		got = Append(err1, nestedGroup)
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+
+		got = Append(nestedGroup, err1)
+		assert.Equal(t, []error{err2, err3, err4, err1}, Errors(got))
+
+		mixed := Append(
+			errors.Join(err1, testCustomErrorGroup{errs: []error{err2, err3}}),
+			errors.Join(err4, testCustomErrorGroup{errs: []error{err5, err6}}),
+		)
+		assert.Equal(t, []error{err1, err2, err3, err4, err5, err6}, Errors(mixed))
+
+		got = Append(Combine(err1, err2), errors.Join(err3, err4))
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+
+		got = Append(Combine(err1, err2), testCustomErrorGroup{errs: []error{err3, err4}})
+		assert.Equal(t, []error{err1, err2, err3, err4}, Errors(got))
+	})
+
+	t.Run("AppendInto", func(t *testing.T) {
+		var err error
+		AppendInto(&err, errors.Join(err1, err2))
+		AppendInto(&err, testCustomErrorGroup{errs: []error{err3, err4}})
+		AppendInto(&err, errors.Join(err5, errors.Join(err6)))
+		assert.Equal(t, []error{err1, err2, err3, err4, err5, err6}, Errors(err))
 	})
 }
