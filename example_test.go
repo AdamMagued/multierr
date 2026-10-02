@@ -122,3 +122,26 @@ func ExampleClose() {
 	// Hello, World
 	// foo
 }
+
+type examplePathError struct {
+	path string
+}
+
+func (e *examplePathError) Error() string {
+	return fmt.Sprintf("failed to access %s", e.path)
+}
+
+func ExampleAs() {
+	err := multierr.Combine(
+		errors.New("connection failed"),
+		&examplePathError{path: "/tmp/data.txt"},
+	)
+
+	var pathErr *examplePathError
+	if multierr.As(err, &pathErr) {
+		fmt.Printf("found path error for %s\n", pathErr.path)
+	}
+
+	// Output:
+	// found path error for /tmp/data.txt
+}

@@ -43,6 +43,14 @@
 //		fmt.Println("The following errors occurred:", errors)
 //	}
 //
+// To extract a specific error type from a combined error, the As function may
+// be used.
+//
+//	var perr *os.PathError
+//	if multierr.As(err, &perr) {
+//		fmt.Println("The following path failed:", perr.Path)
+//	}
+//
 // # Appending from a loop
 //
 // You sometimes need to append into an error from a loop.
@@ -223,6 +231,20 @@ type multiError struct {
 // This satisfies the Go 1.20 multi-error interface.
 func (merr *multiError) Unwrap() []error {
 	return merr.Errors()
+}
+
+// As attempts to find the first error in the error list that matches the type
+// of the value that target points to.
+//
+// This method allows errors.As and other error inspection tools to traverse
+// the values stored on the multierr error.
+func (merr *multiError) As(target any) bool {
+	for _, err := range merr.Errors() {
+		if errors.As(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 // Errors returns the list of underlying errors.
@@ -521,6 +543,26 @@ func Every(err error, target error) bool {
 		}
 	}
 	return true
+}
+
+// As finds the first error in err that matches target, and if one is found, sets
+// target to that error value and returns true. Otherwise, it returns false.
+//
+// An error matches target if the error's concrete value is assignable to the value
+// pointed to by target, or if the error has a method As(any) bool such that As(target)
+// returns true.
+//
+// As unwraps errors using [errors.As] and traverses errors extracted via multierr.
+func As(err error, target any) bool {
+	if errors.As(err, target) {
+		return true
+	}
+	for _, e := range extractErrors(err) {
+		if e != err && As(e, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func extractErrors(err error) []error {

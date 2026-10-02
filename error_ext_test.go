@@ -140,3 +140,77 @@ func TestErrorsWrappingSameType(t *testing.T) {
 		assert.True(t, errors.Is(err, errGreatSadness{3}))
 	})
 }
+
+type dummyCustomGroup struct {
+	errors []error
+}
+
+func (d dummyCustomGroup) Error() string   { return "custom group" }
+func (d dummyCustomGroup) Unwrap() []error { return d.errors }
+
+func TestMultierrAs(t *testing.T) {
+	t.Run("nil error", func(t *testing.T) {
+		var got errGreatSadness
+		assert.False(t, multierr.As(nil, &got))
+	})
+
+	t.Run("single matching error", func(t *testing.T) {
+		var got errGreatSadness
+		err := errGreatSadness{42}
+		require.True(t, multierr.As(err, &got))
+		assert.Equal(t, 42, got.id)
+	})
+
+	t.Run("single mismatching error", func(t *testing.T) {
+		var got errGreatSadness
+		err := errors.New("other error")
+		assert.False(t, multierr.As(err, &got))
+	})
+
+	t.Run("combined multierr left and right", func(t *testing.T) {
+		err := multierr.Append(
+			errGreatSadness{42},
+			errUnprecedentedFailure{43},
+		)
+
+		var sadness errGreatSadness
+		require.True(t, multierr.As(err, &sadness))
+		assert.Equal(t, 42, sadness.id)
+
+		var failure errUnprecedentedFailure
+		require.True(t, multierr.As(err, &failure))
+		assert.Equal(t, 43, failure.id)
+
+		var rootCause errRootCause
+		require.True(t, multierr.As(err, &rootCause))
+		assert.Equal(t, 43, rootCause.i)
+
+		var pathErr *os.PathError
+		assert.False(t, multierr.As(err, &pathErr))
+	})
+
+	t.Run("combined same type returns first", func(t *testing.T) {
+		err := multierr.Combine(
+			errGreatSadness{1},
+			errGreatSadness{2},
+			errGreatSadness{3},
+		)
+
+		var got errGreatSadness
+		require.True(t, multierr.As(err, &got))
+		assert.Equal(t, 1, got.id)
+	})
+
+	t.Run("custom errorGroup implementation", func(t *testing.T) {
+		grp := dummyCustomGroup{
+			errors: []error{
+				errors.New("generic"),
+				errGreatSadness{99},
+			},
+		}
+
+		var got errGreatSadness
+		require.True(t, multierr.As(grp, &got))
+		assert.Equal(t, 99, got.id)
+	})
+}
